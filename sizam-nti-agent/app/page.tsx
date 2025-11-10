@@ -57,6 +57,39 @@ function mergeMarkdownTables(oldTable: string, newTable: string) {
   const merged = [header, separator, ...oldRows, ...dedupedNewRows];
   return merged.join("\n");
 }
+
+function parseMarkdownTable(md: string) {
+  if (!md) return [];
+
+  const lines = md.trim().split("\n").filter(Boolean);
+  if (lines.length < 3) return [];
+
+  const headerLine = lines[0];
+  const headers = headerLine
+    .split("|")
+    .map((h) => h.trim())
+    .filter((h) => h !== "");
+
+  const rows = lines.slice(2); // пропускаем header и "---"
+
+  return rows
+    .map((line) => {
+      if (!line.includes("|")) return null;
+      const cells = line
+        .split("|")
+        .map((c) => c.trim())
+        .filter((c) => c !== "");
+      if (!cells.length) return null;
+
+      const obj: Record<string, string> = {};
+      headers.forEach((h, idx) => {
+        obj[h] = cells[idx] || "";
+      });
+      return obj;
+    })
+    .filter(Boolean) as Array<Record<string, string>>;
+}
+
 export default function HomePage() {
   const [topic, setTopic] = useState("");
   const [keywords, setKeywords] = useState("");
@@ -75,7 +108,7 @@ export default function HomePage() {
   const [languages, setLanguages] = useState<string[]>(["Английский"]);
   const [needRu, setNeedRu] = useState(true);
   const [needMetrics, setNeedMetrics] = useState(true);
-
+  const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
   const toggleSource = (s: string) => {
     setSources((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s].slice(0, 5)
@@ -421,48 +454,229 @@ const handleMore = async () => {
         </form>
       </section>
 
-      <section
-        style={{
-          background: "#FFFFFF",
-          border: "1px solid #E5E7EB",
-          borderRadius: "16px",
-          boxShadow:
-            "0 1px 2px rgba(0,0,0,.06), 0 10px 30px rgba(15,23,42,.08)",
-          padding: "18px",
-          minHeight: "200px",
-        }}
-      >
-        <h2 style={{ marginTop: 0 }}>Результат</h2>
-        {answer ? (
-          <>
-            <div style={{ overflowX: "auto" }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {answer}
-              </ReactMarkdown>
-            </div>
-            <button
-              onClick={handleMore}
+     <section
+  style={{
+    background: "#FFFFFF",
+    border: "1px solid #E5E7EB",
+    borderRadius: "16px",
+    boxShadow: "0 1px 2px rgba(0,0,0,.06), 0 10px 30px rgba(15,23,42,.08)",
+    padding: "18px",
+    minHeight: "200px",
+  }}
+>
+  <h2 style={{ marginTop: 0 }}>Результат</h2>
+  {answer ? (
+    <>
+      {/* переключатель представления */}
+      <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+        <button
+          type="button"
+          onClick={() => setViewMode("cards")}
+          style={{
+            border: `1px solid ${
+              viewMode === "cards" ? "#2563EB" : "#E2E8F0"
+            }`,
+            background: viewMode === "cards" ? "#EFF6FF" : "#fff",
+            borderRadius: "10px",
+            padding: "4px 10px",
+            fontSize: "12px",
+            cursor: "pointer",
+            fontWeight: 500,
+          }}
+        >
+          Карточки
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("table")}
+          style={{
+            border: `1px solid ${
+              viewMode === "table" ? "#2563EB" : "#E2E8F0"
+            }`,
+            background: viewMode === "table" ? "#EFF6FF" : "#fff",
+            borderRadius: "10px",
+            padding: "4px 10px",
+            fontSize: "12px",
+            cursor: "pointer",
+            fontWeight: 500,
+          }}
+        >
+          Таблица
+        </button>
+      </div>
+
+      {viewMode === "cards" ? (
+        // карточки
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            gap: "14px",
+          }}
+        >
+          {parseMarkdownTable(answer).map((row) => (
+            <div
+              key={row["Ссылка (URL)"] || row["№"] || Math.random().toString()}
               style={{
-                marginTop: "12px",
-                background: "#F1F5F9",
-                border: "1px solid #E5E7EB",
-                borderRadius: "10px",
-                padding: "6px 10px",
-                cursor: "pointer",
+                background: "#fff",
+                border: "1px solid #E2E8F0",
+                borderRadius: "14px",
+                padding: "12px 12px 10px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+                boxShadow:
+                  "0 1px 2px rgba(15,23,42,0.03), 0 8px 24px rgba(15,23,42,0.04)",
               }}
             >
-              Ещё документы
-            </button>
-          </>
-        ) : (
-          <p style={{ color: "#94A3B8" }}>
-            Ответ ассистента появится здесь в виде таблицы.
-          </p>
-        )}
-      </section>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {row["Тип документа"] ? (
+                  <span
+                    style={{
+                      background: "#EFF6FF",
+                      color: "#1D4ED8",
+                      fontSize: "11px",
+                      padding: "2px 8px",
+                      borderRadius: "9999px",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {row["Тип документа"]}
+                  </span>
+                ) : null}
+                {row["Источник"] ? (
+                  <span
+                    style={{
+                      background: "#F8FAFC",
+                      color: "#475569",
+                      fontSize: "11px",
+                      padding: "2px 8px",
+                      borderRadius: "9999px",
+                    }}
+                  >
+                    {row["Источник"]}
+                  </span>
+                ) : null}
+                {row["Дата публикации (ДД.ММ.ГГГГ)"] ? (
+                  <span style={{ fontSize: "11px", color: "#94A3B8" }}>
+                    {row["Дата публикации (ДД.ММ.ГГГГ)"]}
+                  </span>
+                ) : null}
+              </div>
+
+              <div>
+                <h3
+                  style={{
+                    fontSize: "14px",
+                    margin: "2px 0 4px",
+                    lineHeight: 1.25,
+                  }}
+                >
+                  {row["Название (оригинал)"] || "Без названия"}
+                </h3>
+                {row["Название (русский перевод)"] ? (
+                  <p style={{ fontSize: "12px", color: "#475569", margin: 0 }}>
+                    {row["Название (русский перевод)"]}
+                  </p>
+                ) : null}
+              </div>
+
+              {row["Аннотация (русский перевод)"] ? (
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "#64748B",
+                    margin: "4px 0 0",
+                    lineHeight: 1.35,
+                    maxHeight: "3.3em",
+                    overflow: "hidden",
+                  }}
+                >
+                  {row["Аннотация (русский перевод)"]}
+                </p>
+              ) : null}
+
+              <div
+                style={{
+                  marginTop: "auto",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "8px",
+                }}
+              >
+                {row["Релевантность"] ? (
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      color: "#0F172A",
+                      background: "#F1F5F9",
+                      borderRadius: "9999px",
+                      padding: "3px 8px",
+                    }}
+                  >
+                    Релевантность: {row["Релевантность"]}
+                  </span>
+                ) : (
+                  <span />
+                )}
+
+                <div style={{ display: "flex", gap: "6px" }}>
+                  {row["Ссылка (URL)"] ? (
+                    <a
+                      href={row["Ссылка (URL)"]}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        fontSize: "11px",
+                        color: "#2563EB",
+                        textDecoration: "none",
+                        fontWeight: 500,
+                      }}
+                    >
+                      Открыть
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        // таблица (как было)
+        <div style={{ overflowX: "auto" }}>
+          <div className="nti-table">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {answer}
+            </ReactMarkdown>
+          </div>
+        </div>
+      )}
+
+      <button
+        onClick={handleMore}
+        style={{
+          marginTop: "12px",
+          background: "#F1F5F9",
+          border: "1px solid #E5E7EB",
+          borderRadius: "10px",
+          padding: "6px 10px",
+          cursor: "pointer",
+        }}
+      >
+        Ещё документы
+      </button>
+    </>
+  ) : (
+    <p style={{ color: "#94A3B8" }}>
+      Ответ ассистента появится здесь в виде таблицы или карточек.
+    </p>
+  )}
+</section>
     </main>
   );
 }
+
 
 
 
