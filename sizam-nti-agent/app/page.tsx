@@ -36,19 +36,27 @@ function mergeMarkdownTables(oldTable: string, newTable: string) {
   const oldLines = oldTable.trim().split("\n");
   const newLines = newTable.trim().split("\n");
 
-  // защита: если вдруг что-то не таблица
   if (oldLines.length < 2) return newTable;
   if (newLines.length < 2) return oldTable;
 
   const header = oldLines[0];
   const separator = oldLines[1];
-  const oldRows = oldLines.slice(2);
-  const newRows = newLines.slice(2); // пропускаем шапку у новой
 
-  const merged = [header, separator, ...oldRows, ...newRows];
+  const oldRows = oldLines.slice(2);
+  const newRows = newLines.slice(2);
+
+  // кладём старые строки в set, чтобы быстро проверять
+  const existing = new Set(oldRows.map((r) => r.trim()));
+
+  const dedupedNewRows = newRows.filter((r) => {
+    const trimmed = r.trim();
+    if (!trimmed) return false;
+    return !existing.has(trimmed);
+  });
+
+  const merged = [header, separator, ...oldRows, ...dedupedNewRows];
   return merged.join("\n");
 }
-
 export default function HomePage() {
   const [topic, setTopic] = useState("");
   const [keywords, setKeywords] = useState("");
@@ -118,7 +126,7 @@ export default function HomePage() {
     }
   };
 
-  const handleMore = async () => {
+const handleMore = async () => {
   setLoading(true);
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -133,14 +141,14 @@ export default function HomePage() {
       languages,
       needRu,
       needMetrics,
-history: [
-  ...history,
-  {
-    role: "user",
-    content:
-      "Дай следующую подборку других документов по той же теме. НЕ повторяй документы из предыдущей таблицы. Если документов мало — дай оставшиеся.",
-  },
-],
+      history: [
+        ...history,
+        {
+          role: "user",
+          content:
+            "Дай следующую подборку других документов по той же теме. НЕ повторяй документы из предыдущей таблицы. Если документов мало — дай оставшиеся.",
+        },
+      ],
     }),
     headers: { "Content-Type": "application/json" },
   });
@@ -154,13 +162,18 @@ history: [
     setAnswer((prev) => mergeMarkdownTables(prev, normalized));
     setHistory((prev) => [
       ...prev,
-      { role: "user", content: "Дай следующую подборку документов." },
+      {
+        role: "user",
+        content:
+          "Дай следующую подборку других документов по той же теме. НЕ повторяй документы из предыдущей таблицы. Если документов мало — дай оставшиеся.",
+      },
       { role: "assistant", content: normalized },
     ]);
   } else {
     setAnswer(data.error || "Не удалось получить ответ от агента.");
   }
 };
+
   
   return (
     <main
@@ -450,6 +463,7 @@ history: [
     </main>
   );
 }
+
 
 
 
