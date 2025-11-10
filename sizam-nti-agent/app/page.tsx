@@ -29,6 +29,26 @@ function normalizeTable(md: string) {
     .trim();
 }
 
+function mergeMarkdownTables(oldTable: string, newTable: string) {
+  if (!oldTable) return newTable;
+  if (!newTable) return oldTable;
+
+  const oldLines = oldTable.trim().split("\n");
+  const newLines = newTable.trim().split("\n");
+
+  // защита: если вдруг что-то не таблица
+  if (oldLines.length < 2) return newTable;
+  if (newLines.length < 2) return oldTable;
+
+  const header = oldLines[0];
+  const separator = oldLines[1];
+  const oldRows = oldLines.slice(2);
+  const newRows = newLines.slice(2); // пропускаем шапку у новой
+
+  const merged = [header, separator, ...oldRows, ...newRows];
+  return merged.join("\n");
+}
+
 export default function HomePage() {
   const [topic, setTopic] = useState("");
   const [keywords, setKeywords] = useState("");
@@ -99,45 +119,45 @@ export default function HomePage() {
   };
 
   const handleMore = async () => {
-    setLoading(true);
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        topic,
-        keywords,
-        periodFrom,
-        periodTo,
-        sources,
-        scenario,
-        docTypes,
-        languages,
-        needRu,
-        needMetrics,
-        history: [
-          ...history,
-          { role: "user", content: "Дай следующую подборку документов." },
-        ],
-      }),
-      headers: { "Content-Type": "application/json" },
-    });
-
-    const data = await res.json();
-    console.log("MORE response", data);
-    setLoading(false);
-
-    if (res.ok && data.answer) {
-      const normalized = normalizeTable(data.answer);
-      setAnswer(normalized);
-      setHistory((prev) => [
-        ...prev,
+  setLoading(true);
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      topic,
+      keywords,
+      periodFrom,
+      periodTo,
+      sources,
+      scenario,
+      docTypes,
+      languages,
+      needRu,
+      needMetrics,
+      history: [
+        ...history,
         { role: "user", content: "Дай следующую подборку документов." },
-        { role: "assistant", content: normalized },
-      ]);
-    } else {
-      setAnswer(data.error || "Не удалось получить ответ от агента.");
-    }
-  };
+      ],
+    }),
+    headers: { "Content-Type": "application/json" },
+  });
 
+  const data = await res.json();
+  console.log("MORE response", data);
+  setLoading(false);
+
+  if (res.ok && data.answer) {
+    const normalized = normalizeTable(data.answer);
+    setAnswer((prev) => mergeMarkdownTables(prev, normalized));
+    setHistory((prev) => [
+      ...prev,
+      { role: "user", content: "Дай следующую подборку документов." },
+      { role: "assistant", content: normalized },
+    ]);
+  } else {
+    setAnswer(data.error || "Не удалось получить ответ от агента.");
+  }
+};
+  
   return (
     <main
       style={{
@@ -426,6 +446,7 @@ export default function HomePage() {
     </main>
   );
 }
+
 
 
 
