@@ -3,6 +3,19 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 
+function normalizeTable(md: string) {
+  // если модель уже дала нормальные переводы строк — ничего не делаем
+  if (md.includes("\n|")) return md;
+
+  return md
+    // перенос перед строкой-разделителем
+    .replace(/\|\s*-{3,}\s*\|/g, "\n|---|")
+    // перенос перед строками с номером
+    .replace(/\|\s*(\d+)\s*\|/g, "\n| $1 |")
+    // на всякий случай уберём двойные пробелы
+    .trim();
+}
+
 const SOURCE_OPTIONS = [
   "IEEE",
   "SpringerLink",
@@ -396,6 +409,7 @@ const handleSubmit = async (e: React.FormEvent) => {
     </main>
   );
 }
+
 
 
 
