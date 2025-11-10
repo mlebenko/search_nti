@@ -77,55 +77,61 @@ const handleSubmit = async (e: React.FormEvent) => {
   const data = await res.json();
   setLoading(false);
 
-  if (res.ok && data.answer) {
-    setAnswer(data.answer);
-    setHistory((prev) => [
-      ...prev,
-      {
-        role: "user",
-        content: `Тема: ${topic}; ключевые: ${keywords}; период: ${periodFrom} — ${periodTo}`,
-      },
-      { role: "assistant", content: data.answer },
-    ]);
+if (res.ok && data.answer) {
+  const normalized = normalizeTable(data.answer);
+  setAnswer(normalized);
+  setHistory((prev) => [
+    ...prev,
+    {
+      role: "user",
+      content: `Тема: ${topic}; ключевые: ${keywords}; период: ${periodFrom} — ${periodTo}`,
+    },
+    { role: "assistant", content: normalized },
+  ]);
   } else {
     // если API вернул ошибку (например, нет ключа или упал импорт) — покажем её
     setAnswer(data.error || "Не удалось получить ответ от агента.");
   }
 };
 
-  const handleMore = async () => {
-    setLoading(true);
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        topic,
-        keywords,
-        periodFrom,
-        periodTo,
-        sources,
-        scenario,
-        docTypes,
+const handleMore = async () => {
+  setLoading(true);
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      topic,
+      keywords,
+      periodFrom,
+      periodTo,
+      sources,
+      scenario,
+      docTypes,
       languages,
       needRu,
       needMetrics,
-        history: [
-          ...history,
-          { role: "user", content: "Дай следующую подборку документов." },
-        ],
-      }),
-      headers: { "Content-Type": "application/json" },
-    });
-    const data = await res.json();
-    setLoading(false);
-    if (data.answer) {
-      setAnswer(data.answer);
-      setHistory((prev) => [
-        ...prev,
+      history: [
+        ...history,
         { role: "user", content: "Дай следующую подборку документов." },
-        { role: "assistant", content: data.answer },
-      ]);
-    }
-  };
+      ],
+    }),
+    headers: { "Content-Type": "application/json" },
+  });
+
+  const data = await res.json();
+  setLoading(false);
+
+  if (res.ok && data.answer) {
+    const normalized = normalizeTable(data.answer);
+    setAnswer(normalized);
+    setHistory((prev) => [
+      ...prev,
+      { role: "user", content: "Дай следующую подборку документов." },
+      { role: "assistant", content: normalized },
+    ]);
+  } else {
+    setAnswer(data.error || "Не удалось получить ответ от агента.");
+  }
+};
 
   return (
     <main
@@ -409,6 +415,7 @@ const handleSubmit = async (e: React.FormEvent) => {
     </main>
   );
 }
+
 
 
 
