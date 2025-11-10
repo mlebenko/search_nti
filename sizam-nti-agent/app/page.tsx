@@ -25,6 +25,10 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [answer, setAnswer] = useState("");
   const [history, setHistory] = useState<any[]>([]);
+  const [docTypes, setDocTypes] = useState<string[]>([]);
+const [languages, setLanguages] = useState<string[]>(["Английский"]);
+const [needRu, setNeedRu] = useState(true);
+const [needMetrics, setNeedMetrics] = useState(true);
 
   const toggleSource = (s: string) => {
     setSources((prev) =>
@@ -47,6 +51,10 @@ const handleSubmit = async (e: React.FormEvent) => {
       sources,
       scenario,
       history,
+      docTypes,
+    languages,
+    needRu,
+    needMetrics
     }),
     headers: {
       "Content-Type": "application/json",
@@ -83,6 +91,10 @@ const handleSubmit = async (e: React.FormEvent) => {
         periodTo,
         sources,
         scenario,
+        docTypes,
+      languages,
+      needRu,
+      needMetrics,
         history: [
           ...history,
           { role: "user", content: "Дай следующую подборку документов." },
@@ -305,4 +317,5 @@ const handleSubmit = async (e: React.FormEvent) => {
     </main>
   );
 }
+
 
