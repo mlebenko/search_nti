@@ -38,14 +38,17 @@ const {
     const period =
       periodFrom && periodTo ? `${periodFrom} — ${periodTo}` : "не указан";
 
-    const userMessage = `
+const userMessage = `
 Тема: ${topic || "не указана"}
 Ключевые слова: ${keywords || "не указаны"}
 Период: ${period}
 Источники: ${sources.length ? sources.join(", ") : "подбери сам"}
-Сценарий: ${scenario}
-Сразу выдай таблицу.
-    `.trim();
+Типы документов: ${docTypes.length ? docTypes.join(", ") : "статьи, конференции, патенты"}
+Языки: ${languages.length ? languages.join(", ") : "английский"}
+Нужен перевод на русский: ${needRu ? "да" : "нет"}
+Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
+Сразу выдай таблицу в формате, указанном в системном сообщении.
+`.trim();
 
     console.log("[/api/chat] userMessage:", userMessage);
 
@@ -73,4 +76,5 @@ const {
     );
   }
 }
+
 
