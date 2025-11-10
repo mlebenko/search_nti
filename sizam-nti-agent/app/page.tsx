@@ -133,10 +133,14 @@ export default function HomePage() {
       languages,
       needRu,
       needMetrics,
-      history: [
-        ...history,
-        { role: "user", content: "Дай следующую подборку документов." },
-      ],
+history: [
+  ...history,
+  {
+    role: "user",
+    content:
+      "Дай следующую подборку других документов по той же теме. НЕ повторяй документы из предыдущей таблицы. Если документов мало — дай оставшиеся.",
+  },
+],
     }),
     headers: { "Content-Type": "application/json" },
   });
@@ -446,6 +450,7 @@ export default function HomePage() {
     </main>
   );
 }
+
 
 
 
