@@ -21,15 +21,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     console.log("[/api/chat] body:", body);
 
-    const {
-      topic,
-      keywords,
-      periodFrom,
-      periodTo,
-      sources = [],
-      scenario = "by_sources",
-      history = [],
-    } = body;
+const {
+  topic,
+  keywords,
+  periodFrom,
+  periodTo,
+  sources = [],
+  scenario = "by_sources",
+  history = [],
+  docTypes = [],
+  languages = [],
+  needRu = true,
+  needMetrics = true,
+} = body;
 
     const period =
       periodFrom && periodTo ? `${periodFrom} — ${periodTo}` : "не указан";
@@ -69,3 +73,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
