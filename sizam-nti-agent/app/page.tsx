@@ -32,44 +32,45 @@ export default function HomePage() {
     );
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setAnswer("");
+const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoading(true);
+  setAnswer("");
 
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        topic,
-        keywords,
-        periodFrom,
-        periodTo,
-        sources,
-        scenario,
-        history,
-      }),
-      headers: {
-        "Content-Type": "application/json",
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      topic,
+      keywords,
+      periodFrom,
+      periodTo,
+      sources,
+      scenario,
+      history,
+    }),
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+
+  const data = await res.json();
+  setLoading(false);
+
+  if (res.ok && data.answer) {
+    setAnswer(data.answer);
+    setHistory((prev) => [
+      ...prev,
+      {
+        role: "user",
+        content: `Тема: ${topic}; ключевые: ${keywords}; период: ${periodFrom} — ${periodTo}`,
       },
-    });
-
-    const data = await res.json();
-    setLoading(false);
-
-    if (data.answer) {
-      setAnswer(data.answer);
-      setHistory((prev) => [
-        ...prev,
-        {
-          role: "user",
-          content: `Тема: ${topic}; ключевые: ${keywords}; период: ${periodFrom} — ${periodTo}`,
-        },
-        { role: "assistant", content: data.answer },
-      ]);
-    } else {
-      setAnswer("Не удалось получить ответ от агента.");
-    }
-  };
+      { role: "assistant", content: data.answer },
+    ]);
+  } else {
+    // если API вернул ошибку (например, нет ключа или упал импорт) — покажем её
+    setAnswer(data.error || "Не удалось получить ответ от агента.");
+  }
+};
 
   const handleMore = async () => {
     setLoading(true);
@@ -304,3 +305,4 @@ export default function HomePage() {
     </main>
   );
 }
+
