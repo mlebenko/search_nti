@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 function normalizeTable(md: string) {
   // если модель уже дала нормальные переводы строк — ничего не делаем
@@ -118,6 +119,7 @@ const handleMore = async () => {
   });
 
   const data = await res.json();
+  console.log("MORE response", data); // ← увидишь в DevTools
   setLoading(false);
 
   if (res.ok && data.answer) {
@@ -132,7 +134,7 @@ const handleMore = async () => {
     setAnswer(data.error || "Не удалось получить ответ от агента.");
   }
 };
-
+  
   return (
     <main
       style={{
@@ -390,7 +392,7 @@ const handleMore = async () => {
         {answer ? (
           <>
             <div style={{ overflowX: "auto" }}>
-              <ReactMarkdown>{answer}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}{answer}</ReactMarkdown>
             </div>
             <button
               onClick={handleMore}
@@ -415,6 +417,7 @@ const handleMore = async () => {
     </main>
   );
 }
+
 
 
 
