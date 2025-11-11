@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
       languages = [],
       needRu = true,
       needMetrics = true,
+      // ← вот тут принимаем модель с фронта
       model = "gpt-4o",
     } = body;
 
@@ -89,11 +90,12 @@ export async function POST(req: NextRequest) {
 `.trim();
 
     //
-    // 1. Режим: пользователь сам выбрал источники
+    // 1. Режим: источники выбраны вручную
     //
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
       const rawDomains = sources.flatMap((s: string) => SOURCE_DOMAIN_MAP[s] || []);
       const domains = sanitizeDomains(rawDomains);
+
       const filterText = domains.length
         ? `Ищи и подбирай документы прежде всего с этих сайтов/доменов: ${domains.join(
             ", "
@@ -101,7 +103,7 @@ export async function POST(req: NextRequest) {
         : `Если документ без рабочей ссылки или DOI — не включай его.`;
 
       const resp = await client.responses.create({
-        model: model || "gpt-4o",
+        model, // ← пробрасываем выбранную модель
         tools: [{ type: "web_search_preview" }],
         input: [
           { role: "system", content: SYSTEM_PROMPT },
@@ -122,11 +124,11 @@ ${filterText}
     //
     // 2. Режим: авто-подбор источников
     //
-    // 2А. сначала попросим модель собрать домены (без параметров инструмента)
+    // 2А. сначала попросим модель (на 4o – быстрая) подобрать домены
     let autoDomains: string[] = [];
     try {
       const picked = await client.responses.create({
-        model: "gpt-4o",
+        model: "gpt-4o", // подбор доменов всегда на быстрой
         tools: [{ type: "web_search_preview" }],
         input: [
           {
@@ -144,7 +146,7 @@ ${filterText}
           .slice(0, 7)
       );
     } catch {
-      // если не получилось — дефолт
+      // если не удалось — дефолт
       autoDomains = sanitizeDomains([
         "ieeexplore.ieee.org",
         "link.springer.com",
@@ -159,9 +161,9 @@ ${filterText}
         )}. Если по ним мало результатов — можешь добавить близкие по теме. Документы без ссылки/DOI не включай.`
       : `Документы без ссылки/DOI не включай.`;
 
-    // 2Б. основной поиск
+    // 2Б. основной поиск — уже на выбранной пользователем модели
     const resp = await client.responses.create({
-      model: model || "gpt-4o",
+      model, // ← здесь тоже
       tools: [{ type: "web_search_preview" }],
       input: [
         { role: "system", content: SYSTEM_PROMPT },
@@ -184,5 +186,6 @@ ${autoFilterText}
     );
   }
 }
+
 
 
