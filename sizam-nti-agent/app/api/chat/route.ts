@@ -5,7 +5,9 @@ import { SYSTEM_PROMPT } from "../../../lib/prompt";
 
 export const dynamic = "force-dynamic";
 
-// соответствие названий источников и доменов
+// допустимые модели, которые мы поддерживаем в UI
+const ALLOWED_MODELS = ["gpt-4o", "gpt-5"];
+
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -16,23 +18,18 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   Scopus: ["www.scopus.com"],
 };
 
-// 1) чистим домены: убираем нумерацию, маркеры, протоколы, хвосты
+// чистим домены
 function sanitizeDomains(domains: string[]): string[] {
   return domains
     .map((d) => d.trim())
-    // убираем "1. ", "2) ", "- "
     .map((d) => d.replace(/^[\d\.\-\)\s]+/, ""))
-    // убираем http/https
     .map((d) => d.replace(/^https?:\/\//i, ""))
-    // берём только первый кусок, если модель дописала комментарий
     .map((d) => d.split(/\s+/)[0])
-    // убираем хвостовые /
     .map((d) => d.replace(/\/+$/g, ""))
-    // отбрасываем мусор
     .filter((d) => d && d.includes("."));
 }
 
-// 2) достаём реальные результаты поиска из ответа Responses
+// достаём реальные результаты поиска
 function extractWebResults(resp: any): Array<{ url?: string; title?: string }> {
   if (!resp || !Array.isArray(resp.output)) return [];
   const results: Array<{ url?: string; title?: string }> = [];
@@ -53,7 +50,7 @@ function extractWebResults(resp: any): Array<{ url?: string; title?: string }> {
   return results;
 }
 
-// 3) парсим markdown-таблицу в заголовки и строки
+// парсим markdown-таблицу
 function parseMarkdownTable(md: string): { headers: string[]; rows: string[][] } {
   const lines = md.split("\n").filter(Boolean);
   const headerLine = lines.find((l) => l.trim().startsWith("|"));
@@ -70,7 +67,6 @@ function parseMarkdownTable(md: string): { headers: string[]; rows: string[][] }
     const line = lines[i];
     if (!line.trim().startsWith("|")) continue;
     const cells = line.split("|").map((c) => c.trim());
-    // убираем первый и последний пустые, если есть
     const normalized = cells.filter((_, idx) => !(idx === 0 || idx === cells.length - 1));
     rows.push(normalized);
   }
@@ -78,7 +74,7 @@ function parseMarkdownTable(md: string): { headers: string[]; rows: string[][] }
   return { headers, rows };
 }
 
-// 4) собираем markdown-таблицу обратно
+// обратно в markdown
 function buildMarkdownTable(headers: string[], rows: string[][]): string {
   const headerLine = `| ${headers.join(" | ")} |`;
   const sepLine = `| ${headers.map(() => "---").join(" | ")} |`;
@@ -123,9 +119,18 @@ export async function POST(req: NextRequest) {
       model: userModel,
     } = body;
 
-    // модель: что пришло с фронта, то и используем, иначе gpt-4o
-    const modelToUse =
+    // уведомления, которые отправим на фронт
+    const notices: string[] = [];
+
+    // если пользователь выбрал модель, которой нет — откатываем и говорим об этом
+    let modelToUse =
       userModel && typeof userModel === "string" ? userModel : "gpt-4o";
+    if (!ALLOWED_MODELS.includes(modelToUse)) {
+      notices.push(
+        `Модель "${modelToUse}" недоступна в этом окружении. Использована gpt-4o.`
+      );
+      modelToUse = "gpt-4o";
+    }
 
     const period =
       periodFrom && periodTo
@@ -171,9 +176,9 @@ export async function POST(req: NextRequest) {
               baseBlock +
               `
 Ограничь поиск указанными источниками.
-В итоговой таблице ОБЯЗАТЕЛЬНО заполни колонку "Ссылка (URL)" на страницу документа/публикации/патента, если она есть в результатах поиска.
-Если ссылку найти нельзя — поставь "—".
-Выведи одну таблицу.
+Если за указанный период и тему документов мало — добери из соседних дат этого же источника (сначала 2025, затем 2024), но НЕ запрашивай подтверждений.
+Всегда возвращай одну таблицу.
+В таблице ОБЯЗАТЕЛЬНО заполни "Ссылка (URL)" если она есть, иначе ставь "—".
               `.trim(),
           },
           ...history,
@@ -182,7 +187,6 @@ export async function POST(req: NextRequest) {
 
       console.log("RAW RESPONSES (by_sources):", JSON.stringify(resp, null, 2));
 
-      // текст, который вернула модель
       const rawAnswer =
         resp.output_text ??
         (Array.isArray(resp.output)
@@ -191,20 +195,14 @@ export async function POST(req: NextRequest) {
               .join("\n")
           : "");
 
-      // ссылки, которые реально вернул web_search
       const webResults = extractWebResults(resp);
-
-      // парсим таблицу
       const { headers, rows } = parseMarkdownTable(rawAnswer);
-
-      // индекс колонки ссылки
       const linkColIdx = headers.findIndex(
         (h) => h.toLowerCase().includes("ссылка") || h.toLowerCase().includes("url")
       );
 
       if (linkColIdx !== -1 && rows.length) {
         rows.forEach((row, idx) => {
-          // расширим строку, если модель дала меньше колонок
           while (row.length < headers.length) {
             row.push("");
           }
@@ -217,26 +215,32 @@ export async function POST(req: NextRequest) {
         });
 
         const finalTable = buildMarkdownTable(headers, rows);
-        return NextResponse.json({ answer: finalTable });
+        return NextResponse.json({ answer: finalTable, notice: notices.join(" ") });
       }
 
-      // если вдруг модель не дала таблицу — отдаём сырой текст
-      return NextResponse.json({ answer: rawAnswer });
+      return NextResponse.json({ answer: rawAnswer, notice: notices.join(" ") });
     }
 
     // ─────────────────────────────────────────────
     // ВЕТКА 2: "подбери источники сам"
     // ─────────────────────────────────────────────
 
-    // шаг 1 — просим модель вывести домены БЕЗ нумерации
+    // если пользователь задал очень узкий период — предупредим на фронте
+    if (scenario === "auto_sources" && periodFrom && periodTo) {
+      notices.push(
+        "Выбран автоматический подбор источников при заданных датах. Фильтры могли быть автоматически расширены, чтобы набрать релевантные документы."
+      );
+    }
+
+    // шаг 1 — модель подбирает домены БЕЗ нумерации
     const pickResp = await client.responses.create({
       model: modelToUse,
       tools: [{ type: "web_search" } as any],
       input: [
         {
           role: "user",
-          content: `Подбери 5-7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}.
-ПИШИ ТОЛЬКО домены, по одному в строку, без цифр, без тире, без комментариев. Примеры: ieeexplore.ieee.org, link.springer.com`,
+          content: `Подбери 5–7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}.
+ПИШИ ТОЛЬКО домены, по одному в строку, без цифр и комментариев. Примеры: ieeexplore.ieee.org, link.springer.com, www.sciencedirect.com`,
         },
       ],
     });
@@ -257,7 +261,6 @@ export async function POST(req: NextRequest) {
         .slice(0, 7)
     );
 
-    // шаг 2 — основной поиск по этим доменам
     const searchResp = await client.responses.create({
       model: modelToUse,
       tools: [
@@ -275,12 +278,13 @@ export async function POST(req: NextRequest) {
             (autoDomains.length
               ? `
 Используй для поиска эти источники: ${autoDomains.join(", ")}.
-В таблице ОБЯЗАТЕЛЬНО заполни "Ссылка (URL)" и "DOI / Номер патента", если они есть в результатах поиска.
-Если нет — ставь "—".
-Выведи одну таблицу.
+Если за указанный период документов мало — добери из этого же источника за ближайший период (начиная с 2025, затем 2024).
+Не запрашивай подтверждений и не предлагай варианты — сразу верни одну таблицу.
+В таблице ОБЯЗАТЕЛЬНО заполни "Ссылка (URL)" и "DOI / Номер патента", если они есть. Если нет — ставь "—".
               `.trim()
               : `
-Выведи одну таблицу. Если ссылки нет — ставь "—".
+Если за указанный период документов мало — добери из ближайшего периода.
+Не запрашивай подтверждений. Верни одну таблицу.
               `.trim()),
         },
         ...history,
@@ -317,10 +321,10 @@ export async function POST(req: NextRequest) {
       });
 
       const finalTable2 = buildMarkdownTable(headers2, rows2);
-      return NextResponse.json({ answer: finalTable2 });
+      return NextResponse.json({ answer: finalTable2, notice: notices.join(" ") });
     }
 
-    return NextResponse.json({ answer: rawAnswer2 });
+    return NextResponse.json({ answer: rawAnswer2, notice: notices.join(" ") });
   } catch (err: any) {
     console.error("chat route error", err);
     return NextResponse.json(
@@ -329,5 +333,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+
 
 
