@@ -1,9 +1,8 @@
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT } from "@/lib/prompt";
+import { SYSTEM_PROMPT } from "../../../lib/prompt"; // ← вот это главное изменение
 
-// соответствие названия источника на фронте → домены для поиска
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -12,7 +11,6 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   PubMed: ["pubmed.ncbi.nlm.nih.gov", "www.ncbi.nlm.nih.gov"],
   arXiv: ["arxiv.org"],
   Scopus: ["www.scopus.com"],
-  // сюда же потом добавишь свои внутренние домены, если надо
 };
 
 export async function POST(req: NextRequest) {
@@ -35,7 +33,7 @@ export async function POST(req: NextRequest) {
       periodFrom = "",
       periodTo = "",
       sources = [],
-      scenario = "by_sources", // "by_sources" | "auto_sources"
+      scenario = "by_sources",
       history = [],
       docTypes = [],
       languages = [],
@@ -43,7 +41,6 @@ export async function POST(req: NextRequest) {
       needMetrics = true,
     } = body;
 
-    // соберём человекочитаемый период
     const period =
       periodFrom && periodTo
         ? `${periodFrom} — ${periodTo}`
@@ -53,7 +50,6 @@ export async function POST(req: NextRequest) {
         ? `до ${periodTo}`
         : "не указан";
 
-    // то, что мы всегда отправляем как user-контекст
     const baseUserMessage = `
 Тема запроса: ${topic || "не указана"}
 Ключевые слова: ${keywords || "не указаны"}
@@ -66,7 +62,6 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    // утилита: вытащить текст из Responses API
     const extractText = (resp: any): string => {
       const out = resp.output ?? resp;
       if (!out) return "";
@@ -80,11 +75,8 @@ export async function POST(req: NextRequest) {
       return "";
     };
 
-    // =====================================================
-    // СЦЕНАРИЙ 1: пользователь выбрал конкретные источники
-    // =====================================================
+    // ==== сценарий 1: источники заданы ====
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
-      // маппим названия источников в домены
       const domains: string[] = sources.flatMap(
         (s: string) => SOURCE_DOMAIN_MAP[s] || []
       );
@@ -94,7 +86,6 @@ export async function POST(req: NextRequest) {
         tools: [
           {
             type: "web_search_preview",
-            // если домены были выбраны — ограничим поиск именно ими
             ...(domains.length ? { domains } : {}),
           },
         ],
@@ -106,7 +97,6 @@ export async function POST(req: NextRequest) {
               baseUserMessage +
               `\nОграничь поисковые источники указанными выше доменами. Выведи таблицу.`,
           },
-          // история диалога с фронта, если она есть
           ...history,
         ],
       });
@@ -115,13 +105,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ answer });
     }
 
-    // =====================================================
-    // СЦЕНАРИЙ 2: “подобрать автоматически”
-    // сначала: спросить у модели, какие домены лучше
-    // затем: основной поиск по этим доменам
-    // =====================================================
-
-    // 1) авто-подбор доменов
+    // ==== сценарий 2: подобрать автоматически ====
+    // 1) подбираем домены
     const sourcesResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -184,6 +169,8 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+
 
 
 
