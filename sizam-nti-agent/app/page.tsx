@@ -14,12 +14,46 @@ const SOURCE_OPTIONS = [
   "Scopus",
 ];
 
+const DOC_TYPE_OPTIONS = [
+  { value: "article", label: "Статьи / журналы" },
+  { value: "conference", label: "Материалы конференций" },
+  { value: "review", label: "Обзоры" },
+  { value: "patent", label: "Патенты" },
+  { value: "report", label: "Тех. отчёты / гос. публикации" },
+];
+
 const MODEL_OPTIONS = [
   { value: "gpt-4o", label: "GPT-4o" },
   { value: "gpt-5", label: "GPT-5" },
-  // если в окружении нет thinking — всё равно отправим, бэкенд сам скажет notice и переключится
   { value: "gpt-5-thinking", label: "GPT-5 Thinking" },
 ];
+
+// утилита: вытаскиваем таблицу из markdown-а
+function parseMarkdownTable(md: string) {
+  const lines = md.split("\n").map((l) => l.trim());
+  const headerLineIndex = lines.findIndex((l) => l.startsWith("|"));
+  if (headerLineIndex === -1) {
+    return { headers: [], rows: [] };
+  }
+  const headerLine = lines[headerLineIndex];
+  const headers = headerLine
+    .split("|")
+    .map((h) => h.trim())
+    .filter(Boolean);
+
+  // строка-разделитель после заголовка
+  const rows: string[][] = [];
+  for (let i = headerLineIndex + 2; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.startsWith("|")) continue;
+    const cells = line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((_, idx, arr) => !(idx === 0 || idx === arr.length - 1));
+    rows.push(cells);
+  }
+  return { headers, rows };
+}
 
 export default function HomePage() {
   const [topic, setTopic] = useState("");
@@ -39,10 +73,20 @@ export default function HomePage() {
   const [needMetrics, setNeedMetrics] = useState(true);
   const [model, setModel] = useState("gpt-4o");
   const [notice, setNotice] = useState("");
+  const [viewMode, setViewMode] = useState<"table" | "cards">("table");
+  const [expandedCards, setExpandedCards] = useState<Record<number, boolean>>(
+    {}
+  );
 
   const toggleSource = (s: string) => {
     setSources((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s].slice(0, 5)
+    );
+  };
+
+  const toggleDocType = (val: string) => {
+    setDocTypes((prev) =>
+      prev.includes(val) ? prev.filter((x) => x !== val) : [...prev, val]
     );
   };
 
@@ -140,6 +184,9 @@ export default function HomePage() {
     }
   };
 
+  // для карточек парсим ответ
+  const { headers, rows } = parseMarkdownTable(answer);
+
   return (
     <main
       style={{
@@ -155,11 +202,12 @@ export default function HomePage() {
           SIZAM NTI Agent
         </h1>
         <p style={{ margin: "6px 0 0", color: "#475569" }}>
-          Форма для запроса НТИ: соберите параметры — агент вернёт таблицу
-          документов.
+          Форма для запроса НТИ: соберите параметры — агент вернёт таблицу или
+          карточки документов.
         </p>
       </header>
 
+      {/* ФОРМА */}
       <section
         style={{
           display: "grid",
@@ -205,7 +253,7 @@ export default function HomePage() {
                 padding: "10px",
                 fontFamily: "inherit",
               }}
-              placeholder="Например: поиск публикаций по коррозионной стойкости материалов для морских платформ"
+              placeholder="Например: LPI/LPD radar для военных применений..."
               required
             />
           </label>
@@ -220,7 +268,7 @@ export default function HomePage() {
                 borderRadius: "12px",
                 padding: "8px 10px",
               }}
-              placeholder="corrosion, offshore, materials..."
+              placeholder="radar, LPI, low probability of detection..."
             />
           </label>
 
@@ -255,6 +303,7 @@ export default function HomePage() {
             </label>
           </div>
 
+          {/* источники */}
           <div style={{ display: "grid", gap: "8px" }}>
             <span style={{ fontWeight: 500 }}>Источники (до 5)</span>
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -281,6 +330,27 @@ export default function HomePage() {
             </div>
           </div>
 
+          {/* типы документов */}
+          <div style={{ display: "grid", gap: "6px" }}>
+            <span style={{ fontWeight: 500 }}>Типы документов</span>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              {DOC_TYPE_OPTIONS.map((dt) => (
+                <label
+                  key={dt.value}
+                  style={{ display: "flex", gap: "4px", alignItems: "center" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={docTypes.includes(dt.value)}
+                    onChange={() => toggleDocType(dt.value)}
+                  />
+                  {dt.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* сценарий */}
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
             <label style={{ display: "flex", gap: "6px", alignItems: "center" }}>
               <input
@@ -323,6 +393,7 @@ export default function HomePage() {
         </form>
       </section>
 
+      {/* РЕЗУЛЬТАТ */}
       <section
         style={{
           background: "#FFFFFF",
@@ -334,11 +405,57 @@ export default function HomePage() {
           minHeight: "200px",
         }}
       >
-        <h2 style={{ marginTop: 0 }}>Результат</h2>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: "12px",
+            alignItems: "center",
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 0 }}>Результат</h2>
+          <div
+            style={{
+              display: "flex",
+              background: "#F1F5F9",
+              borderRadius: "9999px",
+              padding: "4px",
+              gap: "4px",
+            }}
+          >
+            <button
+              onClick={() => setViewMode("table")}
+              style={{
+                border: "none",
+                background: viewMode === "table" ? "#FFFFFF" : "transparent",
+                borderRadius: "9999px",
+                padding: "4px 10px",
+                cursor: "pointer",
+                fontSize: "13px",
+              }}
+            >
+              Таблица
+            </button>
+            <button
+              onClick={() => setViewMode("cards")}
+              style={{
+                border: "none",
+                background: viewMode === "cards" ? "#FFFFFF" : "transparent",
+                borderRadius: "9999px",
+                padding: "4px 10px",
+                cursor: "pointer",
+                fontSize: "13px",
+              }}
+            >
+              Карточки
+            </button>
+          </div>
+        </div>
 
         {notice ? (
           <div
             style={{
+              marginTop: "12px",
               marginBottom: "12px",
               background: "#FEF3C7",
               border: "1px solid #FDE68A",
@@ -354,11 +471,178 @@ export default function HomePage() {
 
         {answer ? (
           <>
-            <div style={{ overflowX: "auto" }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {answer}
-              </ReactMarkdown>
-            </div>
+            {viewMode === "table" ? (
+              <div
+                style={{
+                  overflowX: "auto",
+                  border: "1px solid #E2E8F0",
+                  borderRadius: "12px",
+                }}
+              >
+                <div
+                  style={{
+                    minWidth: "720px",
+                  }}
+                >
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      table: ({ node, ...props }) => (
+                        <table
+                          style={{
+                            width: "100%",
+                            borderCollapse: "collapse",
+                            fontSize: "13px",
+                          }}
+                          {...props}
+                        />
+                      ),
+                      th: ({ node, ...props }) => (
+                        <th
+                          style={{
+                            background: "#F8FAFC",
+                            border: "1px solid #E2E8F0",
+                            textAlign: "left",
+                            padding: "6px 8px",
+                            whiteSpace: "nowrap",
+                          }}
+                          {...props}
+                        />
+                      ),
+                      td: ({ node, ...props }) => (
+                        <td
+                          style={{
+                            border: "1px solid #E2E8F0",
+                            padding: "6px 8px",
+                            verticalAlign: "top",
+                          }}
+                          {...props}
+                        />
+                      ),
+                    }}
+                  >
+                    {answer}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: "grid",
+                  gap: "12px",
+                  marginTop: "10px",
+                }}
+              >
+                {rows.length === 0 ? (
+                  <p style={{ color: "#94A3B8" }}>
+                    Не удалось распарсить таблицу в карточки.
+                  </p>
+                ) : (
+                  rows.map((row, idx) => {
+                    const get = (colName: string) => {
+                      const colIdx = headers.findIndex((h) =>
+                        h.toLowerCase().includes(colName)
+                      );
+                      return colIdx !== -1 ? row[colIdx] || "" : "";
+                    };
+
+                    const title =
+                      get("название (рус") ||
+                      get("название") ||
+                      get("title") ||
+                      `Документ ${idx + 1}`;
+                    const source =
+                      get("источник") || get("source") || "Источник не указан";
+                    const date = get("дата") || "";
+                    const type = get("тип документа") || "";
+                    const url = get("ссылка") || "";
+                    const annRu = get("аннотация (рус") || "";
+                    const isExpanded = expandedCards[idx];
+
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          border: "1px solid #E2E8F0",
+                          borderRadius: "14px",
+                          padding: "10px 12px",
+                          background: "#FFFFFF",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: "12px",
+                          }}
+                        >
+                          <div>
+                            <div
+                              style={{
+                                fontWeight: 600,
+                                marginBottom: "2px",
+                              }}
+                            >
+                              {title}
+                            </div>
+                            <div style={{ fontSize: "12px", color: "#64748B" }}>
+                              {type && <span>{type} · </span>}
+                              {source}
+                              {date ? ` · ${date}` : null}
+                            </div>
+                          </div>
+                          {url && url !== "—" ? (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                fontSize: "12px",
+                                color: "#2563EB",
+                                textDecoration: "none",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              Открыть →
+                            </a>
+                          ) : null}
+                        </div>
+
+                        {annRu ? (
+                          <div style={{ marginTop: "6px", fontSize: "13px" }}>
+                            {isExpanded
+                              ? annRu
+                              : annRu.slice(0, 160) +
+                                (annRu.length > 160 ? "..." : "")}
+                            {annRu.length > 160 ? (
+                              <button
+                                onClick={() =>
+                                  setExpandedCards((prev) => ({
+                                    ...prev,
+                                    [idx]: !prev[idx],
+                                  }))
+                                }
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "#2563EB",
+                                  cursor: "pointer",
+                                  marginLeft: "4px",
+                                  fontSize: "12px",
+                                }}
+                              >
+                                {isExpanded ? "Свернуть" : "Развернуть"}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
             <button
               onClick={handleMore}
               style={{
@@ -374,14 +658,15 @@ export default function HomePage() {
             </button>
           </>
         ) : (
-          <p style={{ color: "#94A3B8" }}>
-            Ответ ассистента появится здесь в виде таблицы.
+          <p style={{ color: "#94A3B8", marginTop: "14px" }}>
+            Ответ ассистента появится здесь в виде таблицы или карточек.
           </p>
         )}
       </section>
     </main>
   );
 }
+
 
 
 
