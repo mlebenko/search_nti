@@ -1,8 +1,9 @@
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT } from "../../../lib/prompt"; // ← вот это главное изменение
+import { SYSTEM_PROMPT } from "../../../lib/prompt";
 
+// соответствие названию источника на фронте → домены для web-search
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
       needMetrics = true,
     } = body;
 
+    // человекочитаемый период
     const period =
       periodFrom && periodTo
         ? `${periodFrom} — ${periodTo}`
@@ -50,6 +52,7 @@ export async function POST(req: NextRequest) {
         ? `до ${periodTo}`
         : "не указан";
 
+    // общая часть пользовательского запроса
     const baseUserMessage = `
 Тема запроса: ${topic || "не указана"}
 Ключевые слова: ${keywords || "не указаны"}
@@ -62,6 +65,7 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
+    // утилита: вытащить текст из responses API
     const extractText = (resp: any): string => {
       const out = resp.output ?? resp;
       if (!out) return "";
@@ -75,8 +79,11 @@ export async function POST(req: NextRequest) {
       return "";
     };
 
-    // ==== сценарий 1: источники заданы ====
+    // =====================================================
+    // СЦЕНАРИЙ 1: пользователь выбрал конкретные источники
+    // =====================================================
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
+      // домены для web-search
       const domains: string[] = sources.flatMap(
         (s: string) => SOURCE_DOMAIN_MAP[s] || []
       );
@@ -89,7 +96,7 @@ export async function POST(req: NextRequest) {
             ...(domains.length ? { domains } : {}),
           },
         ],
-        messages: [
+        input: [
           { role: "system", content: SYSTEM_PROMPT },
           {
             role: "user",
@@ -97,6 +104,7 @@ export async function POST(req: NextRequest) {
               baseUserMessage +
               `\nОграничь поисковые источники указанными выше доменами. Выведи таблицу.`,
           },
+          // история из фронта (если есть)
           ...history,
         ],
       });
@@ -105,8 +113,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ answer });
     }
 
-    // ==== сценарий 2: подобрать автоматически ====
-    // 1) подбираем домены
+    // =====================================================
+    // СЦЕНАРИЙ 2: подобрать источники автоматически
+    // 1) сначала спрашиваем "какие домены"
+    // 2) затем ищем по ним
+    // =====================================================
+
+    // 1. авто-подбор доменов
     const sourcesResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -114,7 +127,7 @@ export async function POST(req: NextRequest) {
           type: "web_search_preview",
         },
       ],
-      messages: [
+      input: [
         {
           role: "system",
           content:
@@ -130,11 +143,11 @@ export async function POST(req: NextRequest) {
     const sourcesText = extractText(sourcesResp);
     const autoDomains = sourcesText
       .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith("#"))
+      .map((l: string) => l.trim())
+      .filter((l: string) => l && !l.startsWith("#"))
       .slice(0, 7);
 
-    // 2) основной поиск по подобранным доменам
+    // 2. основной поиск
     const mainResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -143,7 +156,7 @@ export async function POST(req: NextRequest) {
           ...(autoDomains.length ? { domains: autoDomains } : {}),
         },
       ],
-      messages: [
+      input: [
         { role: "system", content: SYSTEM_PROMPT },
         {
           role: "user",
@@ -169,6 +182,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
 
 
