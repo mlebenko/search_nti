@@ -4,9 +4,8 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "../../../lib/prompt";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 25;
 
-// соответствие названий из фронта и доменов
+// соответствие названий из интерфейса доменам
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -17,7 +16,6 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   Scopus: ["www.scopus.com"],
 };
 
-// чуть подчистим то, что пришло от модели / из интерфейса
 function sanitizeDomains(domains: string[]): string[] {
   return domains
     .map((d) => d.trim())
@@ -39,22 +37,6 @@ function extractText(resp: any): string {
       .join("\n");
   }
   return "";
-}
-
-// таймаут, чтобы Vercel не ждал бесконечно
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const id = setTimeout(() => reject(new Error("TIMEOUT")), ms);
-    promise
-      .then((res) => {
-        clearTimeout(id);
-        resolve(res);
-      })
-      .catch((err) => {
-        clearTimeout(id);
-        reject(err);
-      });
-  });
 }
 
 export async function POST(req: NextRequest) {
@@ -110,34 +92,28 @@ export async function POST(req: NextRequest) {
     // 1. Режим: пользователь сам выбрал источники
     //
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
-      // превращаем названия из интерфейса в домены
       const rawDomains = sources.flatMap((s: string) => SOURCE_DOMAIN_MAP[s] || []);
       const domains = sanitizeDomains(rawDomains);
-      const domainText = domains.length
-        ? `Ищи ТОЛЬКО по этим доменам / сайтам: ${domains.join(
+      const filterText = domains.length
+        ? `Ищи и подбирай документы прежде всего с этих сайтов/доменов: ${domains.join(
             ", "
-          )}. Если документ без рабочей ссылки или DOI — НЕ включай его в таблицу.`
-        : "Если документ без рабочей ссылки или DOI — не включай его в таблицу.";
+          )}. Если документ без рабочей ссылки или DOI — не включай его.`
+        : `Если документ без рабочей ссылки или DOI — не включай его.`;
 
-      const resp = await withTimeout(
-        client.responses.create({
-          model: model || "gpt-4o",
-          tools: [
-            {
-              type: "web_search_preview",
-            },
-          ],
-          input: [
-            { role: "system", content: SYSTEM_PROMPT },
-            {
-              role: "user",
-              content: baseBlock + "\n" + domainText + "\nВыведи одну таблицу.",
-            },
-            ...history,
-          ],
-        }),
-        22000
-      );
+      const resp = await client.responses.create({
+        model: model || "gpt-4o",
+        tools: [{ type: "web_search_preview" }],
+        input: [
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: `${baseBlock}
+${filterText}
+Выведи одну таблицу.`,
+          },
+          ...history,
+        ],
+      });
 
       const answer = extractText(resp);
       return NextResponse.json({ answer, notice: "" });
@@ -146,22 +122,19 @@ export async function POST(req: NextRequest) {
     //
     // 2. Режим: авто-подбор источников
     //
-    // 2А. сначала просим подобрать домены (всегда на gpt-4o, без параметров)
+    // 2А. сначала попросим модель собрать домены (без параметров инструмента)
     let autoDomains: string[] = [];
     try {
-      const picked = await withTimeout(
-        client.responses.create({
-          model: "gpt-4o",
-          tools: [{ type: "web_search_preview" }],
-          input: [
-            {
-              role: "user",
-              content: `Подбери 5–7 доменов (сайтов) для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}. Верни ТОЛЬКО домены, по одному в строку, без нумерации, без комментариев.`,
-            },
-          ],
-        }),
-        12000
-      );
+      const picked = await client.responses.create({
+        model: "gpt-4o",
+        tools: [{ type: "web_search_preview" }],
+        input: [
+          {
+            role: "user",
+            content: `Подбери 5–7 доменов (сайтов) для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}. Верни только домены, по одному в строку, без нумерации и комментариев.`,
+          },
+        ],
+      });
       const pickedText = extractText(picked);
       autoDomains = sanitizeDomains(
         pickedText
@@ -171,7 +144,7 @@ export async function POST(req: NextRequest) {
           .slice(0, 7)
       );
     } catch {
-      // если не удалось — даём дефолт
+      // если не получилось — дефолт
       autoDomains = sanitizeDomains([
         "ieeexplore.ieee.org",
         "link.springer.com",
@@ -180,51 +153,30 @@ export async function POST(req: NextRequest) {
       ]);
     }
 
-    const autoDomainText = autoDomains.length
-      ? `Используй для поиска преимущественно эти домены: ${autoDomains.join(
+    const autoFilterText = autoDomains.length
+      ? `Используй для поиска прежде всего эти домены: ${autoDomains.join(
           ", "
-        )}. Если по ним мало результатов — можешь добавить соседние в этой же теме. Документы без ссылки/DOI не выводи.`
-      : "Документы без ссылки/DOI не выводи.";
+        )}. Если по ним мало результатов — можешь добавить близкие по теме. Документы без ссылки/DOI не включай.`
+      : `Документы без ссылки/DOI не включай.`;
 
-    // 2Б. основной поиск — уже на выбранной модели
-    try {
-      const resp = await withTimeout(
-        client.responses.create({
-          model: model || "gpt-4o",
-          tools: [
-            {
-              type: "web_search_preview",
-            },
-          ],
-          input: [
-            { role: "system", content: SYSTEM_PROMPT },
-            {
-              role: "user",
-              content: baseBlock + "\n" + autoDomainText + "\nВыведи одну таблицу.",
-            },
-            ...history,
-          ],
-        }),
-        22000
-      );
-
-      const answer = extractText(resp);
-      return NextResponse.json({ answer, notice: "" });
-    } catch (e) {
-      // если и тут не уложились — вернём мягкую заглушку
-      const notice =
-        "Автоматический поиск занял слишком много времени или вернул мало результатов. Уточните период или выберите источники вручную.";
-      return NextResponse.json(
+    // 2Б. основной поиск
+    const resp = await client.responses.create({
+      model: model || "gpt-4o",
+      tools: [{ type: "web_search_preview" }],
+      input: [
+        { role: "system", content: SYSTEM_PROMPT },
         {
-          answer:
-            "| № | Название | Источник | Примечание |\n|---|---|---|---|\n| 1 | Результат не получен | — | " +
-            notice +
-            " |",
-          notice,
+          role: "user",
+          content: `${baseBlock}
+${autoFilterText}
+Выведи одну таблицу.`,
         },
-        { status: 200 }
-      );
-    }
+        ...history,
+      ],
+    });
+
+    const answer = extractText(resp);
+    return NextResponse.json({ answer, notice: "" });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Unknown error" },
@@ -232,4 +184,5 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
