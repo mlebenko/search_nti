@@ -94,27 +94,31 @@ export async function POST(req: NextRequest) {
       const domains = sanitizeDomains(rawDomains);
 
       const resp = await client.responses.create({
-        model: "gpt-5", // ← как в твоём рабочем примере
-        tools: [
-          {
-            type: "web_search_preview",
-            ...(domains.length ? { domains } : {}),
-          },
-        ],
-        input: [
-          {
-            role: "system",
-            content: SYSTEM_PROMPT,
-          },
-          {
-            role: "user",
-            content:
-              baseBlock +
-              `\nОграничь поисковые источники указанными доменами. Выведи одну таблицу.`,
-          },
-          ...history,
-        ],
-      });
+  model: "gpt-4o", // или gpt-5, если у тебя он реально есть
+  tools: [
+    {
+      type: "web_search",
+      ...(domains.length
+        ? { filters: { allowed_domains: domains } }
+        : {}),
+    },
+  ],
+  input: [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content:
+        baseBlock +
+        `\nОграничь поиск указанными источниками. Выведи одну таблицу.`,
+    },
+    ...history,
+  ],
+});
+
+console.log("RAW RESPONSES:", JSON.stringify(resp, null, 2));
+
+const answer = resp.output_text || "";
+return NextResponse.json({ answer });
 
       const answer = extractText(resp);
       return NextResponse.json({ answer });
@@ -180,6 +184,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
 
 
