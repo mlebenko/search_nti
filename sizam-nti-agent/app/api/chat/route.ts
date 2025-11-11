@@ -1,4 +1,3 @@
-// app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "../../../lib/prompt";
@@ -26,6 +25,9 @@ function sanitizeDomains(domains: string[]): string[] {
 export async function POST(req: NextRequest) {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
+    const project = process.env.OPENAI_PROJECT_ID;
+    const organization = process.env.OPENAI_ORG_ID;
+
     if (!apiKey) {
       return NextResponse.json(
         { error: "OPENAI_API_KEY is not set" },
@@ -33,7 +35,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const client = new OpenAI({ apiKey });
+    // создаём клиента с тем же контекстом проекта
+    const client = new OpenAI(
+      organization
+        ? { apiKey, project, organization }
+        : project
+        ? { apiKey, project }
+        : { apiKey }
+    );
 
     const body = await req.json();
     const {
@@ -71,13 +80,13 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    // ===== сценарий 1: источники заданы =====
+    // ===== 1. если источники выбраны вручную =====
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
       const rawDomains = sources.flatMap((s: string) => SOURCE_DOMAIN_MAP[s] || []);
       const domains = sanitizeDomains(rawDomains);
 
       const resp = await client.responses.create({
-        model: "gpt-4o", // можешь вернуть gpt-5, если он нужен
+        model: "gpt-4o",
         tools: [
           {
             type: "web_search",
@@ -100,7 +109,7 @@ export async function POST(req: NextRequest) {
 
       console.log("RAW RESPONSES (by_sources):", JSON.stringify(resp, null, 2));
 
-      const text =
+      const answer =
         resp.output_text ??
         (Array.isArray(resp.output)
           ? resp.output
@@ -108,17 +117,13 @@ export async function POST(req: NextRequest) {
               .join("\n")
           : "");
 
-      return NextResponse.json({ answer: text });
+      return NextResponse.json({ answer });
     }
 
-    // ===== сценарий 2: подобрать источники автоматически =====
+    // ===== 2. если источники надо подобрать автоматически =====
     const pickResp = await client.responses.create({
       model: "gpt-4o",
-      tools: [
-        {
-          type: "web_search",
-        } as any,
-      ],
+      tools: [{ type: "web_search" } as any],
       input: [
         {
           role: "user",
@@ -171,7 +176,7 @@ export async function POST(req: NextRequest) {
 
     console.log("RAW RESPONSES (auto):", JSON.stringify(searchResp, null, 2));
 
-    const text =
+    const answer2 =
       searchResp.output_text ??
       (Array.isArray(searchResp.output)
         ? searchResp.output
@@ -179,7 +184,7 @@ export async function POST(req: NextRequest) {
             .join("\n")
         : "");
 
-    return NextResponse.json({ answer: text });
+    return NextResponse.json({ answer: answer2 });
   } catch (err: any) {
     console.error("chat route error", err);
     return NextResponse.json(
@@ -188,6 +193,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
 
 
