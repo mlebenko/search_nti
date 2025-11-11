@@ -1,8 +1,9 @@
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { SYSTEM_PROMPT } from "@/lib/prompt";
 
-// 1. соответствие "как на фронте называется" → "какие домены реально искать"
+// соответствие названия источника на фронте → домены для поиска
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -11,6 +12,7 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   PubMed: ["pubmed.ncbi.nlm.nih.gov", "www.ncbi.nlm.nih.gov"],
   arXiv: ["arxiv.org"],
   Scopus: ["www.scopus.com"],
+  // сюда же потом добавишь свои внутренние домены, если надо
 };
 
 export async function POST(req: NextRequest) {
@@ -33,7 +35,7 @@ export async function POST(req: NextRequest) {
       periodFrom = "",
       periodTo = "",
       sources = [],
-      scenario = "by_sources",
+      scenario = "by_sources", // "by_sources" | "auto_sources"
       history = [],
       docTypes = [],
       languages = [],
@@ -41,7 +43,7 @@ export async function POST(req: NextRequest) {
       needMetrics = true,
     } = body;
 
-    // соберём период в строку
+    // соберём человекочитаемый период
     const period =
       periodFrom && periodTo
         ? `${periodFrom} — ${periodTo}`
@@ -51,21 +53,7 @@ export async function POST(req: NextRequest) {
         ? `до ${periodTo}`
         : "не указан";
 
-    // 2. это наш системный промпт — что и как выдавать
-    const SYSTEM_PROMPT = `
-Ты — агент по поиску научно-технической информации через веб-поиск.
-Главный приоритет — релевантность, затем свежесть.
-Если все наиболее релевантные документы из одного источника — верни их так, не разбавляя.
-Формат ответа — одна таблица Markdown:
-
-| № | Тип документа | Источник | Дата публикации (ДД.ММ.ГГГГ) | Название (оригинал) | Название (русский перевод) | Аннотация (оригинал) | Аннотация (русский перевод) | Страна | Язык | Индекс цитируемости / метрики | Совпавшие ключевые слова | Релевантность | Ссылка (URL) | DOI / Номер патента | Примечания |
-|---|----------------|----------|------------------------------|----------------------|-----------------------------|-----------------------|------------------------------|--------|------|-------------------------------|---------------------------|--------------|--------------|----------------------|------------|
-
-Ссылку бери из результатов веб-поиска, не выдумывай /document/1234567.
-Если ссылка в поиске отсутствует — такой документ не включай.
-`.trim();
-
-    // 3. общая часть пользовательского сообщения
+    // то, что мы всегда отправляем как user-контекст
     const baseUserMessage = `
 Тема запроса: ${topic || "не указана"}
 Ключевые слова: ${keywords || "не указаны"}
@@ -78,23 +66,25 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    // вспомогательная — вытащить текст из ответа Responses API
+    // утилита: вытащить текст из Responses API
     const extractText = (resp: any): string => {
       const out = resp.output ?? resp;
       if (!out) return "";
       if (Array.isArray(out)) {
         return out
-          .map((item: any) => ("content" in item ? item.content?.[0]?.text?.value : ""))
+          .map((item: any) =>
+            "content" in item ? item.content?.[0]?.text?.value ?? "" : ""
+          )
           .join("\n");
       }
       return "";
     };
 
-    // ================================
-    //  СЦЕНАРИЙ 1: источники выбраны
-    // ================================
+    // =====================================================
+    // СЦЕНАРИЙ 1: пользователь выбрал конкретные источники
+    // =====================================================
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
-      // берем домены из нашей таблицы соответствий
+      // маппим названия источников в домены
       const domains: string[] = sources.flatMap(
         (s: string) => SOURCE_DOMAIN_MAP[s] || []
       );
@@ -104,6 +94,7 @@ export async function POST(req: NextRequest) {
         tools: [
           {
             type: "web_search_preview",
+            // если домены были выбраны — ограничим поиск именно ими
             ...(domains.length ? { domains } : {}),
           },
         ],
@@ -113,8 +104,9 @@ export async function POST(req: NextRequest) {
             role: "user",
             content:
               baseUserMessage +
-              `\nОграничь поисковые источники указанными выше. Выведи таблицу.`,
+              `\nОграничь поисковые источники указанными выше доменами. Выведи таблицу.`,
           },
+          // история диалога с фронта, если она есть
           ...history,
         ],
       });
@@ -123,10 +115,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ answer });
     }
 
-    // ================================
-    //  СЦЕНАРИЙ 2: подобрать автоматически
-    // ================================
-    // 1) сначала спрашиваем модель: какие домены под эту тему лучше
+    // =====================================================
+    // СЦЕНАРИЙ 2: “подобрать автоматически”
+    // сначала: спросить у модели, какие домены лучше
+    // затем: основной поиск по этим доменам
+    // =====================================================
+
+    // 1) авто-подбор доменов
     const sourcesResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -138,7 +133,7 @@ export async function POST(req: NextRequest) {
         {
           role: "system",
           content:
-            "Ты помогаешь выбрать лучшие источники (домены) для поиска НТИ. Верни 5-7 доменов, по одному в строку. Без комментариев.",
+            "Ты помогаешь выбрать лучшие источники (домены) для поиска научно-технической информации. Верни 5-7 доменов, по одному в строку, без комментариев.",
         },
         {
           role: "user",
@@ -154,7 +149,7 @@ export async function POST(req: NextRequest) {
       .filter((l) => l && !l.startsWith("#"))
       .slice(0, 7);
 
-    // 2) теперь основной поиск уже по этим доменам
+    // 2) основной поиск по подобранным доменам
     const mainResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -189,6 +184,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
 
 
