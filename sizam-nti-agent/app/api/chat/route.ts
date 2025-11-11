@@ -4,10 +4,9 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "../../../lib/prompt";
 
 export const dynamic = "force-dynamic";
-// просим Vercel не держать нас 300 сек
-export const maxDuration = 25;
+export const maxDuration = 25; // чтобы Vercel не держал нас 300с
 
-// маппинг названий из фронта → домены
+// соответствие названий из фронта и доменов
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -22,12 +21,11 @@ function sanitizeDomains(domains: string[]): string[] {
   return domains
     .map((d) => d.trim())
     .map((d) => d.replace(/^https?:\/\//i, ""))
-    .map((d) => d.replace(/^\d+\.\s*/, "")) // убираем "1. ieee.org"
+    .map((d) => d.replace(/^\d+\.\s*/, "")) // "1. ieee.org" -> "ieeexplore..."
     .map((d) => d.replace(/\/+$/g, ""))
     .filter(Boolean);
 }
 
-// вытащить текст из responses
 function extractText(resp: any): string {
   if (!resp) return "";
   if (resp.output_text) return resp.output_text;
@@ -42,7 +40,7 @@ function extractText(resp: any): string {
   return "";
 }
 
-// обёртка с таймаутом, чтобы не висеть на Vercel
+// простая обёртка, чтобы обрубить долгие запросы
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const id = setTimeout(() => reject(new Error("TIMEOUT")), ms);
@@ -83,7 +81,7 @@ export async function POST(req: NextRequest) {
       languages = [],
       needRu = true,
       needMetrics = true,
-      model = "gpt-4o", // приходит с фронта
+      model = "gpt-4o",
     } = body;
 
     const period =
@@ -107,9 +105,7 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    //
-    // 1) режим: источники выбраны руками
-    //
+    // 1) пользователь сам выбрал источники
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
       const rawDomains = sources.flatMap((s: string) => SOURCE_DOMAIN_MAP[s] || []);
       const domains = sanitizeDomains(rawDomains);
@@ -119,8 +115,8 @@ export async function POST(req: NextRequest) {
           model: model || "gpt-4o",
           tools: [
             {
-              type: "web_search",
-              filters: domains.length ? { allowed_domains: domains } : undefined,
+              type: "web_search_preview",
+              ...(domains.length ? { domains } : {}),
             },
           ],
           input: [
@@ -134,33 +130,30 @@ export async function POST(req: NextRequest) {
             ...history,
           ],
         }),
-        22000 // 22 сек на этот шаг
+        22000
       );
 
       const answer = extractText(resp);
       return NextResponse.json({ answer, notice: "" });
     }
 
-    //
-    // 2) режим: подобрать источники автоматически
-    //    ШАГ А — подбор доменов: всегда на gpt-4o, чтобы не зависало
-    //
+    // 2) автоподбор источников
+    // сначала подбираем сами домены — ВСЕГДА на gpt-4o, чтобы не зависало
     let autoDomains: string[] = [];
     try {
       const pick = await withTimeout(
         client.responses.create({
           model: "gpt-4o",
-          tools: [{ type: "web_search" }],
+          tools: [{ type: "web_search_preview" }],
           input: [
             {
               role: "user",
-              content: `Подбери 5-7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}. Верни ТОЛЬКО домены, по одному в строку, без нумерации, без комментариев.`,
+              content: `Подбери 5-7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}. Верни ТОЛЬКО домены, по одному в строку, без нумерации и комментариев.`,
             },
           ],
         }),
         12000
       );
-
       const pickedText = extractText(pick);
       autoDomains = sanitizeDomains(
         pickedText
@@ -170,7 +163,7 @@ export async function POST(req: NextRequest) {
           .slice(0, 7)
       );
     } catch {
-      // если не получилось — возьмём дефолтный безопасный набор
+      // если не смогли подобрать — дефолт
       autoDomains = sanitizeDomains([
         "ieeexplore.ieee.org",
         "link.springer.com",
@@ -179,21 +172,16 @@ export async function POST(req: NextRequest) {
       ]);
     }
 
-    //
-    //    ШАГ B — основной поиск: уже на выбранной модели, но тоже с ограничением
-    //
+    // основной поиск — уже на выбранной модели
     let notice = "";
-
     try {
       const resp = await withTimeout(
         client.responses.create({
           model: model || "gpt-4o",
           tools: [
             {
-              type: "web_search",
-              filters: autoDomains.length
-                ? { allowed_domains: autoDomains }
-                : undefined,
+              type: "web_search_preview",
+              ...(autoDomains.length ? { domains: autoDomains } : {}),
             },
           ],
           input: [
@@ -203,10 +191,10 @@ export async function POST(req: NextRequest) {
               content:
                 baseBlock +
                 (autoDomains.length
-                  ? `\nИспользуй для поиска преимущественно эти домены: ${autoDomains.join(
+                  ? `\nИспользуй преимущественно эти домены: ${autoDomains.join(
                       ", "
                     )}. Выведи одну таблицу.`
-                  : `\nВыведи одну таблицу.`),
+                  : "\nВыведи одну таблицу."),
             },
             ...history,
           ],
@@ -217,16 +205,18 @@ export async function POST(req: NextRequest) {
       const answer = extractText(resp);
       return NextResponse.json({ answer, notice });
     } catch (e) {
-      // приехали сюда — значит, не уложились/упало
       notice =
-        "Автоподбор источников занял слишком много времени, параметры были упрощены. Уточните период или выберите источники вручную.";
-      return NextResponse.json({
-        answer:
-          "| № | Название | Источник | Примечание |\n|---|---|---|---|\n| 1 | Результат не получен | — | " +
-          notice +
-          " |",
-        notice,
-      });
+        "Автоматический поиск занял слишком много времени, параметры были упрощены. Попробуйте указать источники вручную или сократить период.";
+      return NextResponse.json(
+        {
+          answer:
+            "| № | Название | Источник | Примечание |\n|---|---|---|---|\n| 1 | Результат не получен | — | " +
+            notice +
+            " |",
+          notice,
+        },
+        { status: 200 }
+      );
     }
   } catch (err: any) {
     return NextResponse.json(
@@ -235,9 +225,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-
-
-
-
-
-
