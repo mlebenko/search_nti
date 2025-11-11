@@ -37,13 +37,26 @@ export default function HomePage() {
   const [languages, setLanguages] = useState<string[]>(["Английский"]);
   const [needRu, setNeedRu] = useState(true);
   const [needMetrics, setNeedMetrics] = useState(true);
-  const [model, setModel] = useState("gpt-4o"); // 👈 новое состояние
+  const [model, setModel] = useState("gpt-4o");
+  const [notice, setNotice] = useState("");
 
   const toggleSource = (s: string) => {
     setSources((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s].slice(0, 5)
     );
   };
+
+  const data = await res.json();
+setLoading(false);
+
+if (res.ok && data.answer) {
+  setAnswer(data.answer);
+  setNotice(data.notice || ""); // ← вот
+  ...
+} else {
+  setAnswer(data.error || "Не удалось получить ответ от агента.");
+  setNotice("");
+}
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -327,6 +340,22 @@ export default function HomePage() {
         }}
       >
         <h2 style={{ marginTop: 0 }}>Результат</h2>
+        {notice ? (
+    <div
+      style={{
+        marginBottom: "12px",
+        background: "#FEF3C7",
+        border: "1px solid #FDE68A",
+        borderRadius: "8px",
+        padding: "8px 12px",
+        color: "#92400E",
+        fontSize: "14px",
+      }}
+    >
+      {notice}
+    </div>
+  ) : null}
+        
         {answer ? (
           <>
             <div style={{ overflowX: "auto" }}>
@@ -357,6 +386,7 @@ export default function HomePage() {
     </main>
   );
 }
+
 
 
 
