@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "../../../lib/prompt";
 
-// соответствие названию источника на фронте → домены для web-search
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -13,6 +12,37 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   arXiv: ["arxiv.org"],
   Scopus: ["www.scopus.com"],
 };
+
+// убираем https://, http://, слэши и пробелы
+function sanitizeDomains(domains: string[]): string[] {
+  return domains
+    .map((d) => d.trim())
+    .map((d) => d.replace(/^https?:\/\//i, "")) // убрали протокол
+    .map((d) => d.replace(/\/+$/g, "")) // убрали хвостовые /
+    .filter((d) => d.length > 0);
+}
+
+// стараемся вытащить текст из разных форматов ответа
+function extractText(resp: any): string {
+  // иногда SDK кладёт вот так
+  if (resp.output_text) {
+    return resp.output_text;
+  }
+
+  const out = resp.output ?? resp;
+  if (!out) return "";
+
+  if (Array.isArray(out)) {
+    return out
+      .map((item: any) =>
+        "content" in item ? item.content?.[0]?.text?.value ?? "" : ""
+      )
+      .join("\n");
+  }
+
+  // запасной вариант — на отладку
+  return "";
+}
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -42,7 +72,6 @@ export async function POST(req: NextRequest) {
       needMetrics = true,
     } = body;
 
-    // человекочитаемый период
     const period =
       periodFrom && periodTo
         ? `${periodFrom} — ${periodTo}`
@@ -52,7 +81,6 @@ export async function POST(req: NextRequest) {
         ? `до ${periodTo}`
         : "не указан";
 
-    // общая часть пользовательского запроса
     const baseUserMessage = `
 Тема запроса: ${topic || "не указана"}
 Ключевые слова: ${keywords || "не указаны"}
@@ -65,28 +93,12 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    // утилита: вытащить текст из responses API
-    const extractText = (resp: any): string => {
-      const out = resp.output ?? resp;
-      if (!out) return "";
-      if (Array.isArray(out)) {
-        return out
-          .map((item: any) =>
-            "content" in item ? item.content?.[0]?.text?.value ?? "" : ""
-          )
-          .join("\n");
-      }
-      return "";
-    };
-
-    // =====================================================
-    // СЦЕНАРИЙ 1: пользователь выбрал конкретные источники
-    // =====================================================
+    // === СЦЕНАРИЙ 1: источники выбраны вручную ===
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
-      // домены для web-search
-      const domains: string[] = sources.flatMap(
+      const rawDomains: string[] = sources.flatMap(
         (s: string) => SOURCE_DOMAIN_MAP[s] || []
       );
+      const domains = sanitizeDomains(rawDomains);
 
       const resp = await client.responses.create({
         model: "gpt-4o",
@@ -104,7 +116,6 @@ export async function POST(req: NextRequest) {
               baseUserMessage +
               `\nОграничь поисковые источники указанными выше доменами. Выведи таблицу.`,
           },
-          // история из фронта (если есть)
           ...history,
         ],
       });
@@ -113,13 +124,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ answer });
     }
 
-    // =====================================================
-    // СЦЕНАРИЙ 2: подобрать источники автоматически
-    // 1) сначала спрашиваем "какие домены"
-    // 2) затем ищем по ним
-    // =====================================================
+    // === СЦЕНАРИЙ 2: подобрать автоматически ===
 
-    // 1. авто-подбор доменов
+    // 1) сначала попросим модель подобрать домены
     const sourcesResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -141,13 +148,15 @@ export async function POST(req: NextRequest) {
     });
 
     const sourcesText = extractText(sourcesResp);
-    const autoDomains = sourcesText
+    const autoDomainsRaw = sourcesText
       .split("\n")
       .map((l: string) => l.trim())
       .filter((l: string) => l && !l.startsWith("#"))
       .slice(0, 7);
 
-    // 2. основной поиск
+    const autoDomains = sanitizeDomains(autoDomainsRaw);
+
+    // 2) теперь основной поиск по этим доменам
     const mainResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
@@ -182,6 +191,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
 
 
