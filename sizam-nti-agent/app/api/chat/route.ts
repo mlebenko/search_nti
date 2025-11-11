@@ -13,25 +13,25 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   Scopus: ["www.scopus.com"],
 };
 
-// убираем https://, http://, слэши и пробелы
+// убираем протоколы и хвостовые слэши
 function sanitizeDomains(domains: string[]): string[] {
   return domains
     .map((d) => d.trim())
-    .map((d) => d.replace(/^https?:\/\//i, "")) // убрали протокол
-    .map((d) => d.replace(/\/+$/g, "")) // убрали хвостовые /
-    .filter((d) => d.length > 0);
+    .map((d) => d.replace(/^https?:\/\//i, ""))
+    .map((d) => d.replace(/\/+$/g, ""))
+    .filter(Boolean);
 }
 
-// стараемся вытащить текст из разных форматов ответа
+// пытаемся вынуть текст из разных форматов ответа Responses API
 function extractText(resp: any): string {
-  // иногда SDK кладёт вот так
+  if (!resp) return "";
+
+  // иногда бывает resp.output_text
   if (resp.output_text) {
     return resp.output_text;
   }
 
   const out = resp.output ?? resp;
-  if (!out) return "";
-
   if (Array.isArray(out)) {
     return out
       .map((item: any) =>
@@ -40,7 +40,6 @@ function extractText(resp: any): string {
       .join("\n");
   }
 
-  // запасной вариант — на отладку
   return "";
 }
 
@@ -93,20 +92,22 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    // === СЦЕНАРИЙ 1: источники выбраны вручную ===
+    // ===== СЦЕНАРИЙ 1: источники заданы =====
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
       const rawDomains: string[] = sources.flatMap(
         (s: string) => SOURCE_DOMAIN_MAP[s] || []
       );
       const domains = sanitizeDomains(rawDomains);
 
+      // 1. пробуем через Responses + web_search
       const resp = await client.responses.create({
         model: "gpt-4o",
         tools: [
           {
-            type: "web_search_preview",
+            // каст в any, чтобы TS не спорил
+            type: "web_search",
             ...(domains.length ? { domains } : {}),
-          },
+          } as any,
         ],
         input: [
           { role: "system", content: SYSTEM_PROMPT },
@@ -120,19 +121,39 @@ export async function POST(req: NextRequest) {
         ],
       });
 
-      const answer = extractText(resp);
+      let answer = extractText(resp);
+
+      // 2. если всё равно пусто — фолбэк на обычный чат
+      if (!answer) {
+        const chatFallback = await client.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            {
+              role: "user",
+              content:
+                baseUserMessage +
+                `\nИсточники: ${domains.join(", ") || "не заданы"}.\nВыведи таблицу.`,
+            },
+            ...history,
+          ],
+        });
+
+        answer = chatFallback.choices[0]?.message?.content ?? "";
+      }
+
       return NextResponse.json({ answer });
     }
 
-    // === СЦЕНАРИЙ 2: подобрать автоматически ===
+    // ===== СЦЕНАРИЙ 2: подобрать автоматически =====
 
-    // 1) сначала попросим модель подобрать домены
+    // 2.1 просим модель подобрать домены (тоже через responses)
     const sourcesResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
         {
-          type: "web_search_preview",
-        },
+          type: "web_search",
+        } as any,
       ],
       input: [
         {
@@ -148,22 +169,22 @@ export async function POST(req: NextRequest) {
     });
 
     const sourcesText = extractText(sourcesResp);
-    const autoDomainsRaw = sourcesText
-      .split("\n")
-      .map((l: string) => l.trim())
-      .filter((l: string) => l && !l.startsWith("#"))
-      .slice(0, 7);
+    const autoDomains = sanitizeDomains(
+      sourcesText
+        .split("\n")
+        .map((l: string) => l.trim())
+        .filter((l: string) => l && !l.startsWith("#"))
+        .slice(0, 7)
+    );
 
-    const autoDomains = sanitizeDomains(autoDomainsRaw);
-
-    // 2) теперь основной поиск по этим доменам
+    // 2.2 основной поиск по подобранным доменам
     const mainResp = await client.responses.create({
       model: "gpt-4o",
       tools: [
         {
-          type: "web_search_preview",
+          type: "web_search",
           ...(autoDomains.length ? { domains: autoDomains } : {}),
-        },
+        } as any,
       ],
       input: [
         { role: "system", content: SYSTEM_PROMPT },
@@ -181,7 +202,31 @@ export async function POST(req: NextRequest) {
       ],
     });
 
-    const answer = extractText(mainResp);
+    let answer = extractText(mainResp);
+
+    // фолбэк, если responses ничего не вернул
+    if (!answer) {
+      const chatFallback = await client.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content:
+              baseUserMessage +
+              (autoDomains.length
+                ? `\nИсточники: ${autoDomains.join(
+                    ", "
+                  )}.\nВыведи таблицу.`
+                : `\nВыведи таблицу.`),
+          },
+          ...history,
+        ],
+      });
+
+      answer = chatFallback.choices[0]?.message?.content ?? "";
+    }
+
     return NextResponse.json({ answer });
   } catch (err: any) {
     console.error("chat route error", err);
@@ -191,6 +236,7 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
 
 
