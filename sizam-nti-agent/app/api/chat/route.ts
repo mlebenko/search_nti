@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "../../../lib/prompt";
 
+export const dynamic = "force-dynamic";
+
+// маппинг названий из фронта → домены
 const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   IEEE: ["ieeexplore.ieee.org"],
   SpringerLink: ["link.springer.com"],
@@ -13,7 +16,6 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
   Scopus: ["www.scopus.com"],
 };
 
-// убираем протоколы и хвостовые слэши
 function sanitizeDomains(domains: string[]): string[] {
   return domains
     .map((d) => d.trim())
@@ -22,15 +24,10 @@ function sanitizeDomains(domains: string[]): string[] {
     .filter(Boolean);
 }
 
-// пытаемся вынуть текст из разных форматов ответа Responses API
+// на всякий случай — вытащить текст из responses
 function extractText(resp: any): string {
   if (!resp) return "";
-
-  // иногда бывает resp.output_text
-  if (resp.output_text) {
-    return resp.output_text;
-  }
-
+  if (resp.output_text) return resp.output_text;
   const out = resp.output ?? resp;
   if (Array.isArray(out)) {
     return out
@@ -39,24 +36,22 @@ function extractText(resp: any): string {
       )
       .join("\n");
   }
-
   return "";
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "OPENAI_API_KEY is not set" },
-      { status: 500 }
-    );
-  }
-
-  const client = new OpenAI({ apiKey });
-
   try {
-    const body = await req.json();
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "OPENAI_API_KEY is not set" },
+        { status: 500 }
+      );
+    }
 
+    const client = new OpenAI({ apiKey });
+
+    const body = await req.json();
     const {
       topic = "",
       keywords = "",
@@ -80,7 +75,8 @@ export async function POST(req: NextRequest) {
         ? `до ${periodTo}`
         : "не указан";
 
-    const baseUserMessage = `
+    // базовое содержимое, как у тебя на фронте
+    const baseBlock = `
 Тема запроса: ${topic || "не указана"}
 Ключевые слова: ${keywords || "не указаны"}
 Период: ${period}
@@ -92,141 +88,89 @@ export async function POST(req: NextRequest) {
 Нужны метрики и релевантность: ${needMetrics ? "да" : "нет"}
 `.trim();
 
-    // ===== СЦЕНАРИЙ 1: источники заданы =====
+    // ===== 1. если источники выбраны вручную =====
     if (scenario === "by_sources" && Array.isArray(sources) && sources.length > 0) {
-      const rawDomains: string[] = sources.flatMap(
-        (s: string) => SOURCE_DOMAIN_MAP[s] || []
-      );
+      const rawDomains = sources.flatMap((s: string) => SOURCE_DOMAIN_MAP[s] || []);
       const domains = sanitizeDomains(rawDomains);
 
-      // 1. пробуем через Responses + web_search
       const resp = await client.responses.create({
-        model: "gpt-4o",
+        model: "gpt-5", // ← как в твоём рабочем примере
         tools: [
           {
-            // каст в any, чтобы TS не спорил
-            type: "web_search",
+            type: "web_search_preview",
             ...(domains.length ? { domains } : {}),
-          } as any,
+          },
         ],
         input: [
-          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "system",
+            content: SYSTEM_PROMPT,
+          },
           {
             role: "user",
             content:
-              baseUserMessage +
-              `\nОграничь поисковые источники указанными выше доменами. Выведи таблицу.`,
+              baseBlock +
+              `\nОграничь поисковые источники указанными доменами. Выведи одну таблицу.`,
           },
           ...history,
         ],
       });
 
-      let answer = extractText(resp);
-
-      // 2. если всё равно пусто — фолбэк на обычный чат
-      if (!answer) {
-        const chatFallback = await client.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            {
-              role: "user",
-              content:
-                baseUserMessage +
-                `\nИсточники: ${domains.join(", ") || "не заданы"}.\nВыведи таблицу.`,
-            },
-            ...history,
-          ],
-        });
-
-        answer = chatFallback.choices[0]?.message?.content ?? "";
-      }
-
+      const answer = extractText(resp);
       return NextResponse.json({ answer });
     }
 
-    // ===== СЦЕНАРИЙ 2: подобрать автоматически =====
-
-    // 2.1 просим модель подобрать домены (тоже через responses)
-    const sourcesResp = await client.responses.create({
-      model: "gpt-4o",
-      tools: [
-        {
-          type: "web_search",
-        } as any,
-      ],
+    // ===== 2. если надо подобрать автоматически =====
+    // шаг 1 — спросим модель, какие домены взять
+    const pickSources = await client.responses.create({
+      model: "gpt-5",
+      tools: [{ type: "web_search_preview" }],
       input: [
         {
-          role: "system",
-          content:
-            "Ты помогаешь выбрать лучшие источники (домены) для поиска научно-технической информации. Верни 5-7 доменов, по одному в строку, без комментариев.",
-        },
-        {
           role: "user",
-          content: `Тема: ${topic}. Ключевые слова: ${keywords}. Период: ${period}.`,
+          content: `Подбери 5-7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}. Верни по одному домену в строку, без комментариев.`,
         },
       ],
     });
 
-    const sourcesText = extractText(sourcesResp);
+    const pickedText = extractText(pickSources);
     const autoDomains = sanitizeDomains(
-      sourcesText
+      pickedText
         .split("\n")
         .map((l: string) => l.trim())
-        .filter((l: string) => l && !l.startsWith("#"))
+        .filter(Boolean)
         .slice(0, 7)
     );
 
-    // 2.2 основной поиск по подобранным доменам
-    const mainResp = await client.responses.create({
-      model: "gpt-4o",
+    // шаг 2 — основной поиск по этим доменам
+    const main = await client.responses.create({
+      model: "gpt-5",
       tools: [
         {
-          type: "web_search",
+          type: "web_search_preview",
           ...(autoDomains.length ? { domains: autoDomains } : {}),
-        } as any,
+        },
       ],
       input: [
-        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "system",
+          content: SYSTEM_PROMPT,
+        },
         {
           role: "user",
           content:
-            baseUserMessage +
+            baseBlock +
             (autoDomains.length
               ? `\nИспользуй для поиска преимущественно эти домены: ${autoDomains.join(
                   ", "
-                )}. Выведи таблицу.`
-              : `\nВыведи таблицу.`),
+                )}. Выведи одну таблицу.`
+              : `\nВыведи одну таблицу.`),
         },
         ...history,
       ],
     });
 
-    let answer = extractText(mainResp);
-
-    // фолбэк, если responses ничего не вернул
-    if (!answer) {
-      const chatFallback = await client.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content:
-              baseUserMessage +
-              (autoDomains.length
-                ? `\nИсточники: ${autoDomains.join(
-                    ", "
-                  )}.\nВыведи таблицу.`
-                : `\nВыведи таблицу.`),
-          },
-          ...history,
-        ],
-      });
-
-      answer = chatFallback.choices[0]?.message?.content ?? "";
-    }
-
+    const answer = extractText(main);
     return NextResponse.json({ answer });
   } catch (err: any) {
     console.error("chat route error", err);
@@ -236,6 +180,8 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+
 
 
 
