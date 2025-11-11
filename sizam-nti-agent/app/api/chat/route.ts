@@ -20,15 +20,15 @@ const SOURCE_DOMAIN_MAP: Record<string, string[]> = {
 function sanitizeDomains(domains: string[]): string[] {
   return domains
     .map((d) => d.trim())
-    // убираем "1. ", "2) ", "-  "
+    // убираем "1. ", "2) ", "- "
     .map((d) => d.replace(/^[\d\.\-\)\s]+/, ""))
     // убираем http/https
     .map((d) => d.replace(/^https?:\/\//i, ""))
-    // берём только первую "словесную" часть, если модель дописала комментарий
+    // берём только первый кусок, если модель дописала комментарий
     .map((d) => d.split(/\s+/)[0])
-    // убираем финальные /
+    // убираем хвостовые /
     .map((d) => d.replace(/\/+$/g, ""))
-    // выбрасываем мусор
+    // отбрасываем мусор
     .filter((d) => d && d.includes("."));
 }
 
@@ -69,9 +69,7 @@ function parseMarkdownTable(md: string): { headers: string[]; rows: string[][] }
   for (let i = headerIdx + 2; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim().startsWith("|")) continue;
-    const cells = line
-      .split("|")
-      .map((c) => c.trim());
+    const cells = line.split("|").map((c) => c.trim());
     // убираем первый и последний пустые, если есть
     const normalized = cells.filter((_, idx) => !(idx === 0 || idx === cells.length - 1));
     rows.push(normalized);
@@ -122,7 +120,12 @@ export async function POST(req: NextRequest) {
       languages = [],
       needRu = true,
       needMetrics = true,
+      model: userModel,
     } = body;
+
+    // модель: что пришло с фронта, то и используем, иначе gpt-4o
+    const modelToUse =
+      userModel && typeof userModel === "string" ? userModel : "gpt-4o";
 
     const period =
       periodFrom && periodTo
@@ -153,13 +156,11 @@ export async function POST(req: NextRequest) {
       const domains = sanitizeDomains(rawDomains);
 
       const resp = await client.responses.create({
-        model: "gpt-4o",
+        model: modelToUse,
         tools: [
           {
             type: "web_search",
-            ...(domains.length
-              ? { filters: { allowed_domains: domains } }
-              : {}),
+            ...(domains.length ? { filters: { allowed_domains: domains } } : {}),
           } as any,
         ],
         input: [
@@ -181,7 +182,7 @@ export async function POST(req: NextRequest) {
 
       console.log("RAW RESPONSES (by_sources):", JSON.stringify(resp, null, 2));
 
-      // что сказала модель текстом
+      // текст, который вернула модель
       const rawAnswer =
         resp.output_text ??
         (Array.isArray(resp.output)
@@ -190,20 +191,20 @@ export async function POST(req: NextRequest) {
               .join("\n")
           : "");
 
-      // а что реально вернул инструмент
+      // ссылки, которые реально вернул web_search
       const webResults = extractWebResults(resp);
 
       // парсим таблицу
       const { headers, rows } = parseMarkdownTable(rawAnswer);
 
-      // ищем колонку со ссылкой
-      const linkColIdx = headers.findIndex((h) =>
-        h.toLowerCase().includes("ссылка") || h.toLowerCase().includes("url")
+      // индекс колонки ссылки
+      const linkColIdx = headers.findIndex(
+        (h) => h.toLowerCase().includes("ссылка") || h.toLowerCase().includes("url")
       );
 
       if (linkColIdx !== -1 && rows.length) {
         rows.forEach((row, idx) => {
-          // расширяем строку до длины headers
+          // расширим строку, если модель дала меньше колонок
           while (row.length < headers.length) {
             row.push("");
           }
@@ -217,10 +218,10 @@ export async function POST(req: NextRequest) {
 
         const finalTable = buildMarkdownTable(headers, rows);
         return NextResponse.json({ answer: finalTable });
-      } else {
-        // если модель не дала таблицу — отдаём как есть
-        return NextResponse.json({ answer: rawAnswer });
       }
+
+      // если вдруг модель не дала таблицу — отдаём сырой текст
+      return NextResponse.json({ answer: rawAnswer });
     }
 
     // ─────────────────────────────────────────────
@@ -229,12 +230,12 @@ export async function POST(req: NextRequest) {
 
     // шаг 1 — просим модель вывести домены БЕЗ нумерации
     const pickResp = await client.responses.create({
-      model: "gpt-4o",
+      model: modelToUse,
       tools: [{ type: "web_search" } as any],
       input: [
         {
           role: "user",
-          content: `Подбери 5-7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}. 
+          content: `Подбери 5-7 доменов для поиска НТИ по теме: ${topic}. Ключевые слова: ${keywords}. Период: ${period}.
 ПИШИ ТОЛЬКО домены, по одному в строку, без цифр, без тире, без комментариев. Примеры: ieeexplore.ieee.org, link.springer.com`,
         },
       ],
@@ -256,15 +257,13 @@ export async function POST(req: NextRequest) {
         .slice(0, 7)
     );
 
-    // шаг 2 — основной поиск по подобранным доменам
+    // шаг 2 — основной поиск по этим доменам
     const searchResp = await client.responses.create({
-      model: "gpt-4o",
+      model: modelToUse,
       tools: [
         {
           type: "web_search",
-          ...(autoDomains.length
-            ? { filters: { allowed_domains: autoDomains } }
-            : {}),
+          ...(autoDomains.length ? { filters: { allowed_domains: autoDomains } } : {}),
         } as any,
       ],
       input: [
@@ -300,8 +299,8 @@ export async function POST(req: NextRequest) {
 
     const webResults2 = extractWebResults(searchResp);
     const { headers: headers2, rows: rows2 } = parseMarkdownTable(rawAnswer2);
-    const linkColIdx2 = headers2.findIndex((h) =>
-      h.toLowerCase().includes("ссылка") || h.toLowerCase().includes("url")
+    const linkColIdx2 = headers2.findIndex(
+      (h) => h.toLowerCase().includes("ссылка") || h.toLowerCase().includes("url")
     );
 
     if (linkColIdx2 !== -1 && rows2.length) {
@@ -330,3 +329,5 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+
